@@ -1,10 +1,10 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use octocrab::models::{StarGazer, UserProfile};
 use reqwest::{
     Client, ClientBuilder, RequestBuilder, Response, Result, StatusCode,
     header::{ACCEPT, AUTHORIZATION, HeaderMap},
 };
+use serde_json::Value;
 use tokio::time::{Instant, sleep_until};
 
 const BASE_URL: &str = "https://api.github.com";
@@ -99,7 +99,7 @@ async fn send_with_retry(builder: RequestBuilder, deadline: Instant) -> (Respons
 }
 
 impl Github {
-    pub async fn repos_stargazers(&mut self, full_name: &str, page: u32) -> Result<Vec<StarGazer>> {
+    pub async fn repos_stargazers(&mut self, full_name: &str, page: u32) -> Result<Vec<Value>> {
         let builder = self
             .client
             .get(format!("{BASE_URL}/repos/{full_name}/stargazers"))
@@ -111,7 +111,7 @@ impl Github {
         Ok(stargazers)
     }
 
-    pub async fn user(&mut self, id: u64) -> Result<UserProfile> {
+    pub async fn user(&mut self, id: u64) -> Result<Value> {
         let builder = self
             .client
             .get(format!("{BASE_URL}/user/{id}"))

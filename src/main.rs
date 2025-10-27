@@ -49,14 +49,14 @@ async fn main() -> Result<()> {
                             break;
                         }
                         for stargazer in stargazers {
-                            println!("{}", serde_json::to_string(&stargazer)?);
+                            println!("{}", stargazer);
                         }
                     }
                 }
                 GithubCommands::Users => {
                     for line in io::stdin().lock().lines() {
                         let user = github.user(line?.parse()?).await?;
-                        println!("{}", serde_json::to_string(&user)?);
+                        println!("{}", user);
                     }
                 }
             }
