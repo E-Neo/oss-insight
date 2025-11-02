@@ -1,3 +1,3 @@
 mod github;
 
-pub use github::{GithubApi, GithubApiBuilder};
+pub use github::{Github, GithubBuilder};

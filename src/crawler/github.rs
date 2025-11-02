@@ -17,11 +17,11 @@ const MEDIA_TYPE_STAR: &str = "application/vnd.github.star+json";
 
 const PER_PAGE: u32 = 100;
 
-pub struct GithubApiBuilder {
+pub struct GithubBuilder {
     token: Option<String>,
 }
 
-impl GithubApiBuilder {
+impl GithubBuilder {
     pub fn new() -> Self {
         Self { token: None }
     }
@@ -30,12 +30,12 @@ impl GithubApiBuilder {
         Self { token: Some(t) }
     }
 
-    pub fn build(self) -> GithubApi {
+    pub fn build(self) -> Github {
         let mut headers = HeaderMap::new();
         if let Some(token) = self.token {
             headers.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
         }
-        GithubApi {
+        Github {
             client: ClientBuilder::new()
                 .user_agent(env!("CARGO_PKG_NAME"))
                 .default_headers(headers)
@@ -50,7 +50,7 @@ impl GithubApiBuilder {
     }
 }
 
-pub struct GithubApi {
+pub struct Github {
     client: Client,
     timer: ExponentialBackoffTimer,
 }
@@ -104,7 +104,7 @@ async fn send_with_retry(builder: RequestBuilder, timer: &mut ExponentialBackoff
     }
 }
 
-impl GithubApi {
+impl Github {
     pub async fn repos_stargazers(&mut self, full_name: &str, page: u32) -> Result<Vec<Value>> {
         let builder = self
             .client
@@ -123,12 +123,22 @@ impl GithubApi {
         Ok(value)
     }
 
-    pub async fn repo(&mut self, login: &str) -> Result<Value> {
-        self.get(format!("{BASE_URL}/repos/{login}")).await
+    pub async fn repo(&mut self, full_name: &str) -> Result<Value> {
+        self.get(format!("{BASE_URL}/repos/{full_name}")).await
     }
 
     pub async fn repo_by_id(&mut self, id: u64) -> Result<Value> {
         self.get(format!("{BASE_URL}/repositories/{id}")).await
+    }
+
+    pub async fn readme(&mut self, full_name: &str) -> Result<Value> {
+        self.get(format!("{BASE_URL}/repos/{full_name}/readme"))
+            .await
+    }
+
+    pub async fn readme_by_id(&mut self, id: u64) -> Result<Value> {
+        self.get(format!("{BASE_URL}/repositories/{id}/readme"))
+            .await
     }
 
     pub async fn user(&mut self, login: &str) -> Result<Value> {

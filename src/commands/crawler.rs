@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use oss_insight::crawler::GithubApiBuilder;
+use oss_insight::crawler::GithubBuilder;
 
 use crate::commands::util::stdin_or_iter;
 
@@ -27,7 +27,18 @@ pub enum GithubCommands {
         /// Read from stdin.
         #[arg(long, group = "input")]
         stdin: bool,
-        /// List of login or id.
+        /// List of full_name or id.
+        #[arg(group = "input")]
+        key: Vec<String>,
+    },
+    /// Prints README of the repositories as JSON lines.
+    Readme {
+        #[command(flatten)]
+        api: GithubRepoApi,
+        /// Read from stdin.
+        #[arg(long, group = "input")]
+        stdin: bool,
+        /// List of full_name or id.
         #[arg(group = "input")]
         key: Vec<String>,
     },
@@ -71,9 +82,9 @@ impl CrawlerCommands {
         match self {
             CrawlerCommands::Github { token, command } => {
                 let github_builder = if let Some(token) = token {
-                    GithubApiBuilder::new().token(String::from(token))
+                    GithubBuilder::new().token(String::from(token))
                 } else {
-                    GithubApiBuilder::new()
+                    GithubBuilder::new()
                 };
                 match command {
                     GithubCommands::Stargazers { full_name } => {
@@ -98,6 +109,19 @@ impl CrawlerCommands {
                         } else if api.id {
                             for line in lines {
                                 println!("{}", github.repo_by_id(line?.parse()?).await?);
+                            }
+                        }
+                    }
+                    GithubCommands::Readme { api, stdin, key } => {
+                        let mut github = github_builder.build();
+                        let lines = stdin_or_iter(*stdin, key);
+                        if api.full_name {
+                            for line in lines {
+                                println!("{}", github.readme(&line?).await?);
+                            }
+                        } else if api.id {
+                            for line in lines {
+                                println!("{}", github.readme_by_id(line?.parse()?).await?);
                             }
                         }
                     }
