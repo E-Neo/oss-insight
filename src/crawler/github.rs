@@ -1,11 +1,14 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use log::warn;
 use reqwest::{
-    Client, ClientBuilder, RequestBuilder, Response, Result, StatusCode,
+    Client, ClientBuilder, IntoUrl, RequestBuilder, Response, Result, StatusCode,
     header::{ACCEPT, AUTHORIZATION, HeaderMap},
 };
 use serde_json::Value;
-use tokio::time::{Instant, sleep_until};
+use tokio::time::Instant;
+
+use crate::timer::ExponentialBackoffTimer;
 
 const BASE_URL: &str = "https://api.github.com";
 
@@ -14,11 +17,11 @@ const MEDIA_TYPE_STAR: &str = "application/vnd.github.star+json";
 
 const PER_PAGE: u32 = 100;
 
-pub struct GithubBuilder {
+pub struct GithubApiBuilder {
     token: Option<String>,
 }
 
-impl GithubBuilder {
+impl GithubApiBuilder {
     pub fn new() -> Self {
         Self { token: None }
     }
@@ -27,98 +30,112 @@ impl GithubBuilder {
         Self { token: Some(t) }
     }
 
-    pub fn build(self) -> Github {
+    pub fn build(self) -> GithubApi {
         let mut headers = HeaderMap::new();
         if let Some(token) = self.token {
             headers.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
         }
-        Github {
+        GithubApi {
             client: ClientBuilder::new()
                 .user_agent(env!("CARGO_PKG_NAME"))
                 .default_headers(headers)
                 .build()
                 .unwrap(),
-            deadline: Instant::now(),
+            timer: ExponentialBackoffTimer::new(
+                Instant::now(),
+                Duration::from_secs(60),
+                Duration::from_secs(3600),
+            ),
         }
     }
 }
 
-pub struct Github {
+pub struct GithubApi {
     client: Client,
-    deadline: Instant,
+    timer: ExponentialBackoffTimer,
 }
 
-async fn send_with_retry(builder: RequestBuilder, deadline: Instant) -> (Response, Instant) {
-    let mut deadline = deadline;
-    let mut retry_after = Duration::ZERO;
+fn get_retry_after(resp: &Response) -> Option<Duration> {
+    resp.headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|secs| Duration::from_secs(secs))
+}
+
+fn get_x_ratelimit_reset(resp: &Response) -> Option<Instant> {
+    let headers = resp.headers();
+    headers
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|remaining| *remaining == 0)
+        .and_then(|_| {
+            headers
+                .get("x-ratelimit-reset")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(|secs| {
+                    Instant::now()
+                        + (UNIX_EPOCH + Duration::from_secs(secs))
+                            .duration_since(SystemTime::now())
+                            .unwrap_or(Duration::ZERO)
+                })
+        })
+}
+
+async fn send_with_retry(builder: RequestBuilder, timer: &mut ExponentialBackoffTimer) -> Response {
     loop {
-        if let Some(req) = builder.try_clone() {
-            sleep_until(deadline + retry_after).await;
-            if let Ok(resp) = req.send().await {
-                if let Some(new_deadline) = resp
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .map(|secs| Instant::now() + Duration::from_secs(secs))
-                {
-                    deadline = new_deadline;
-                    retry_after = Duration::ZERO;
-                }
-                if let Some(0) = resp
-                    .headers()
-                    .get("x-ratelimit-remaining")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                {
-                    if let Some(new_deadline) = resp
-                        .headers()
-                        .get("x-ratelimit-reset")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .map(|secs| {
-                            Instant::now()
-                                + (UNIX_EPOCH + Duration::from_secs(secs))
-                                    .duration_since(SystemTime::now())
-                                    .unwrap_or(Duration::ZERO)
-                        })
-                    {
-                        deadline = new_deadline;
-                        retry_after = Duration::ZERO;
-                    }
-                }
-                if resp.status() == StatusCode::OK {
-                    return (resp, deadline);
-                } else {
-                    retry_after = (2 * retry_after).max(Duration::from_secs(60));
-                    deadline = Instant::now() + retry_after;
-                }
+        let req = builder.try_clone().unwrap();
+        timer.sleep().await;
+        if let Ok(resp) = req.send().await {
+            if let Some(retry_after) = get_retry_after(&resp) {
+                timer.set_deadline(Instant::now() + retry_after);
             }
+            if let Some(new_deadline) = get_x_ratelimit_reset(&resp) {
+                timer.set_deadline(new_deadline);
+            }
+            if resp.status() == StatusCode::OK {
+                return resp;
+            }
+            timer.backoff();
+            warn!("{:?}", resp);
         }
     }
 }
 
-impl Github {
+impl GithubApi {
     pub async fn repos_stargazers(&mut self, full_name: &str, page: u32) -> Result<Vec<Value>> {
         let builder = self
             .client
             .get(format!("{BASE_URL}/repos/{full_name}/stargazers"))
             .query(&[("per_page", PER_PAGE), ("page", page)])
             .header(ACCEPT, MEDIA_TYPE_STAR);
-        let (resp, deadline) = send_with_retry(builder, self.deadline).await;
-        self.deadline = deadline;
+        let resp = send_with_retry(builder, &mut self.timer).await;
         let stargazers = resp.json().await?;
         Ok(stargazers)
     }
 
-    pub async fn user(&mut self, id: u64) -> Result<Value> {
-        let builder = self
-            .client
-            .get(format!("{BASE_URL}/user/{id}"))
-            .header(ACCEPT, MEDIA_TYPE_DEFAULT);
-        let (resp, deadline) = send_with_retry(builder, self.deadline).await;
-        self.deadline = deadline;
-        let user = resp.json().await?;
-        Ok(user)
+    async fn get<U: IntoUrl>(&mut self, url: U) -> Result<Value> {
+        let builder = self.client.get(url).header(ACCEPT, MEDIA_TYPE_DEFAULT);
+        let resp = send_with_retry(builder, &mut self.timer).await;
+        let value = resp.json().await?;
+        Ok(value)
+    }
+
+    pub async fn repo(&mut self, login: &str) -> Result<Value> {
+        self.get(format!("{BASE_URL}/repos/{login}")).await
+    }
+
+    pub async fn repo_by_id(&mut self, id: u64) -> Result<Value> {
+        self.get(format!("{BASE_URL}/repositories/{id}")).await
+    }
+
+    pub async fn user(&mut self, login: &str) -> Result<Value> {
+        self.get(format!("{BASE_URL}/users/{login}")).await
+    }
+
+    pub async fn user_by_id(&mut self, id: u64) -> Result<Value> {
+        self.get(format!("{BASE_URL}/user/{id}")).await
     }
 }
