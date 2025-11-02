@@ -1,6 +1,6 @@
 use anyhow::Result;
-use clap::{Args, Subcommand};
-use oss_insight::crawler::GithubBuilder;
+use clap::{Args, Subcommand, ValueEnum};
+use oss_insight::crawler::{GithubBuilder, OssinsightBuilder};
 
 use crate::commands::util::stdin_or_iter;
 
@@ -13,6 +13,11 @@ pub enum CrawlerCommands {
         token: Option<String>,
         #[command(subcommand)]
         command: GithubCommands,
+    },
+    /// Crawler for OSS Insight.
+    Ossinsight {
+        #[command(subcommand)]
+        command: OssinsightCommands,
     },
 }
 
@@ -75,6 +80,34 @@ pub struct GithubUserApi {
     /// By id.
     #[arg(long, group = "api")]
     id: bool,
+}
+
+#[derive(Subcommand)]
+pub enum OssinsightCommands {
+    /// Trending repositories.
+    Trends {
+        /// Period of trending repositories.
+        #[arg(long)]
+        period: Period,
+        /// Read from stdin.
+        #[arg(long, group = "input")]
+        stdin: bool,
+        /// List of languages.
+        #[arg(group = "input")]
+        lang: Vec<String>,
+    },
+}
+
+#[derive(Clone, ValueEnum)]
+pub enum Period {
+    #[value(name = "past_24_hours")]
+    Past24Hours,
+    #[value(name = "past_week")]
+    PastWeek,
+    #[value(name = "past_month")]
+    PastMonth,
+    #[value(name = "past_3_months")]
+    Past3Months,
 }
 
 impl CrawlerCommands {
@@ -140,6 +173,24 @@ impl CrawlerCommands {
                     }
                 }
             }
+            CrawlerCommands::Ossinsight { command } => match command {
+                OssinsightCommands::Trends {
+                    period,
+                    stdin,
+                    lang,
+                } => {
+                    let mut ossinsight = OssinsightBuilder::new().build();
+                    let lines = stdin_or_iter(*stdin, lang);
+                    for line in lines {
+                        println!(
+                            "{}",
+                            ossinsight
+                                .trends(period.to_possible_value().unwrap().get_name(), &line?)
+                                .await?
+                        );
+                    }
+                }
+            },
         }
         Ok(())
     }
