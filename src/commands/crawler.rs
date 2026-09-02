@@ -58,6 +58,14 @@ pub enum GithubCommands {
         #[arg(group = "input")]
         key: Vec<String>,
     },
+    /// Prints trending repositories as JSON lines.
+    Trending {
+        /// Period of trending repositories.
+        #[arg(long)]
+        period: GithubPeriod,
+        /// Language of trending repositories.
+        lang: String,
+    },
 }
 
 #[derive(Args)]
@@ -108,6 +116,16 @@ pub enum Period {
     PastMonth,
     #[value(name = "past_3_months")]
     Past3Months,
+}
+
+#[derive(Clone, ValueEnum)]
+pub enum GithubPeriod {
+    #[value(name = "daily")]
+    Daily,
+    #[value(name = "weekly")]
+    Weekly,
+    #[value(name = "monthly")]
+    Monthly,
 }
 
 impl CrawlerCommands {
@@ -169,6 +187,15 @@ impl CrawlerCommands {
                             for line in lines {
                                 println!("{}", github.user_by_id(line?.parse()?).await?);
                             }
+                        }
+                    }
+                    GithubCommands::Trending { period, lang } => {
+                        let mut github = github_builder.build();
+                        for repo in github
+                            .trending(lang, period.to_possible_value().unwrap().get_name())
+                            .await?
+                        {
+                            println!("{repo}");
                         }
                     }
                 }
