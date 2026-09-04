@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::commands::crawler::CrawlerCommands;
+use crate::commands::source::SourceCommands;
 
 #[derive(Parser)]
 #[command(version)]
@@ -12,17 +12,17 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Information crawler.
-    Crawler {
+    /// Information source.
+    Source {
         #[command(subcommand)]
-        command: CrawlerCommands,
+        command: SourceCommands,
     },
 }
 
 impl Cli {
     pub async fn exec(&self) -> Result<()> {
         match &self.command {
-            Commands::Crawler { command } => command.exec().await?,
+            Commands::Source { command } => command.exec().await?,
         }
         Ok(())
     }

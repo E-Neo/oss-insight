@@ -1,0 +1,12 @@
+[package]
+name = "oss-insight-source"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+oss-insight-http = { path = "../oss-insight-http" }
+reqwest = { version = "0.13", features = ["query"] }
+scraper = "0.27"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"

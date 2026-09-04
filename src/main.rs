@@ -7,7 +7,7 @@ mod commands;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     cli.exec().await?;
     Ok(())

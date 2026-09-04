@@ -1,12 +1,12 @@
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
-use oss_insight::crawler::{GithubBuilder, OssinsightBuilder};
+use oss_insight_source::GithubBuilder;
 
 use crate::commands::util::stdin_or_iter;
 
 #[derive(Subcommand)]
-pub enum CrawlerCommands {
-    /// Crawler for GitHub.
+pub enum SourceCommands {
+    /// Source for GitHub.
     Github {
         /// GitHub token.
         #[arg(long)]
@@ -14,17 +14,10 @@ pub enum CrawlerCommands {
         #[command(subcommand)]
         command: GithubCommands,
     },
-    /// Crawler for OSS Insight.
-    Ossinsight {
-        #[command(subcommand)]
-        command: OssinsightCommands,
-    },
 }
 
 #[derive(Subcommand)]
 pub enum GithubCommands {
-    /// Prints stargazers of the repo as JSON lines.
-    Stargazers { full_name: String },
     /// Prints repositories as JSON lines.
     Repo {
         #[command(flatten)]
@@ -90,34 +83,6 @@ pub struct GithubUserApi {
     id: bool,
 }
 
-#[derive(Subcommand)]
-pub enum OssinsightCommands {
-    /// Trending repositories.
-    Trends {
-        /// Period of trending repositories.
-        #[arg(long)]
-        period: Period,
-        /// Read from stdin.
-        #[arg(long, group = "input")]
-        stdin: bool,
-        /// List of languages.
-        #[arg(group = "input")]
-        lang: Vec<String>,
-    },
-}
-
-#[derive(Clone, ValueEnum)]
-pub enum Period {
-    #[value(name = "past_24_hours")]
-    Past24Hours,
-    #[value(name = "past_week")]
-    PastWeek,
-    #[value(name = "past_month")]
-    PastMonth,
-    #[value(name = "past_3_months")]
-    Past3Months,
-}
-
 #[derive(Clone, ValueEnum)]
 pub enum GithubPeriod {
     #[value(name = "daily")]
@@ -128,38 +93,28 @@ pub enum GithubPeriod {
     Monthly,
 }
 
-impl CrawlerCommands {
+impl SourceCommands {
     pub async fn exec(&self) -> Result<()> {
         match self {
-            CrawlerCommands::Github { token, command } => {
+            SourceCommands::Github { token, command } => {
                 let github_builder = if let Some(token) = token {
                     GithubBuilder::new().token(String::from(token))
                 } else {
                     GithubBuilder::new()
                 };
                 match command {
-                    GithubCommands::Stargazers { full_name } => {
-                        let mut github = github_builder.build();
-                        for page in 1.. {
-                            let stargazers = github.repos_stargazers(full_name, page).await?;
-                            if stargazers.is_empty() {
-                                break;
-                            }
-                            for stargazer in stargazers {
-                                println!("{}", stargazer);
-                            }
-                        }
-                    }
                     GithubCommands::Repo { api, stdin, key } => {
                         let mut github = github_builder.build();
                         let lines = stdin_or_iter(*stdin, key);
                         if api.full_name {
                             for line in lines {
-                                println!("{}", github.repo(&line?).await?);
+                                let resp = github.repo(&line?).await?;
+                                println!("{}", serde_json::to_string(&resp.data)?);
                             }
                         } else if api.id {
                             for line in lines {
-                                println!("{}", github.repo_by_id(line?.parse()?).await?);
+                                let resp = github.repo_by_id(line?.parse()?).await?;
+                                println!("{}", serde_json::to_string(&resp.data)?);
                             }
                         }
                     }
@@ -168,11 +123,13 @@ impl CrawlerCommands {
                         let lines = stdin_or_iter(*stdin, key);
                         if api.full_name {
                             for line in lines {
-                                println!("{}", github.readme(&line?).await?);
+                                let resp = github.readme(&line?).await?;
+                                println!("{}", serde_json::to_string(&resp.data)?);
                             }
                         } else if api.id {
                             for line in lines {
-                                println!("{}", github.readme_by_id(line?.parse()?).await?);
+                                let resp = github.readme_by_id(line?.parse()?).await?;
+                                println!("{}", serde_json::to_string(&resp.data)?);
                             }
                         }
                     }
@@ -181,43 +138,28 @@ impl CrawlerCommands {
                         let lines = stdin_or_iter(*stdin, key);
                         if api.login {
                             for line in lines {
-                                println!("{}", github.user(&line?).await?);
+                                let resp = github.user(&line?).await?;
+                                println!("{}", serde_json::to_string(&resp.data)?);
                             }
                         } else if api.id {
                             for line in lines {
-                                println!("{}", github.user_by_id(line?.parse()?).await?);
+                                let resp = github.user_by_id(line?.parse()?).await?;
+                                println!("{}", serde_json::to_string(&resp.data)?);
                             }
                         }
                     }
                     GithubCommands::Trending { period, lang } => {
                         let mut github = github_builder.build();
-                        for repo in github
+                        let repos = github
                             .trending(lang, period.to_possible_value().unwrap().get_name())
                             .await?
-                        {
-                            println!("{repo}");
+                            .data;
+                        for repo in repos {
+                            println!("{}", serde_json::to_string(&repo)?);
                         }
                     }
                 }
             }
-            CrawlerCommands::Ossinsight { command } => match command {
-                OssinsightCommands::Trends {
-                    period,
-                    stdin,
-                    lang,
-                } => {
-                    let mut ossinsight = OssinsightBuilder::new().build();
-                    let lines = stdin_or_iter(*stdin, lang);
-                    for line in lines {
-                        println!(
-                            "{}",
-                            ossinsight
-                                .trends(period.to_possible_value().unwrap().get_name(), &line?)
-                                .await?
-                        );
-                    }
-                }
-            },
         }
         Ok(())
     }
