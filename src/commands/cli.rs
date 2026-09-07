@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::commands::source::SourceCommands;
+use crate::commands::{config::Config, source::SourceCommands};
 
 #[derive(Parser)]
 #[command(version)]
@@ -21,8 +21,9 @@ enum Commands {
 
 impl Cli {
     pub async fn exec(&self) -> Result<()> {
+        let config = Config::load()?;
         match &self.command {
-            Commands::Source { command } => command.exec().await?,
+            Commands::Source { command } => command.exec(&config).await?,
         }
         Ok(())
     }

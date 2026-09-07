@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use reqwest::{
@@ -20,16 +21,45 @@ const MEDIA_TYPE_DEFAULT: &str = "application/vnd.github+json";
 
 pub struct GithubBuilder {
     token: Option<String>,
+    min_delay: Duration,
+    max_delay: Duration,
+    max_retry_time: Duration,
+    user_agent: String,
+    root_certificates: Vec<reqwest::Certificate>,
 }
 
-#[allow(clippy::new_without_default)]
 impl GithubBuilder {
-    pub fn new() -> Self {
-        Self { token: None }
+    pub fn new(
+        min_delay: Duration,
+        max_delay: Duration,
+        max_retry_time: Duration,
+        user_agent: String,
+    ) -> Self {
+        Self {
+            token: None,
+            min_delay,
+            max_delay,
+            max_retry_time,
+            user_agent,
+            root_certificates: Vec::new(),
+        }
     }
 
     pub fn token(mut self, token: String) -> Self {
         self.token = Some(token);
+        self
+    }
+
+    pub fn add_root_certificate_path(mut self, path: impl AsRef<Path>) -> Self {
+        let pem = std::fs::read(&path).unwrap_or_else(|e| {
+            panic!(
+                "failed to read certificate {}: {e}",
+                path.as_ref().display()
+            )
+        });
+        let certificate = reqwest::Certificate::from_pem(&pem)
+            .unwrap_or_else(|e| panic!("invalid certificate {}: {e}", path.as_ref().display()));
+        self.root_certificates.push(certificate);
         self
     }
 
@@ -38,15 +68,15 @@ impl GithubBuilder {
         if let Some(token) = self.token {
             headers.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
         }
+        let mut client =
+            RateLimitedClientBuilder::new(self.min_delay, self.max_delay, self.max_retry_time)
+                .user_agent(self.user_agent)
+                .default_headers(headers);
+        for certificate in self.root_certificates {
+            client = client.add_root_certificate(certificate);
+        }
         Github {
-            client: RateLimitedClientBuilder::new(
-                Duration::from_secs(60),
-                Duration::from_secs(3600),
-                Duration::from_secs(1800),
-            )
-            .user_agent(env!("CARGO_PKG_NAME"))
-            .default_headers(headers)
-            .build(),
+            client: client.build(),
         }
     }
 }
@@ -197,6 +227,7 @@ pub struct Readme {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TrendingRepo {
+    pub id: u64,
     pub full_name: String,
     #[serde(default)]
     pub description: String,
@@ -280,8 +311,10 @@ fn parse_trending(html: &str) -> Vec<TrendingRepo> {
     document
         .select(&article)
         .filter_map(|repo| {
-            let full_name = repo.select(&name).next()?.attr("href")?;
+            let link = repo.select(&name).next()?;
+            let full_name = link.attr("href")?;
             Some(TrendingRepo {
+                id: repo_id_of(link).unwrap_or(0),
                 full_name: full_name.trim_start_matches('/').to_string(),
                 description: text_of(repo.select(&description).next()),
                 language: text_of(repo.select(&language).next()),
@@ -291,6 +324,12 @@ fn parse_trending(html: &str) -> Vec<TrendingRepo> {
             })
         })
         .collect()
+}
+
+fn repo_id_of(link: ElementRef) -> Option<u64> {
+    link.attr("data-hydro-click")
+        .and_then(|json| serde_json::from_str::<Value>(json).ok())
+        .and_then(|v| v["payload"]["record_id"].as_u64())
 }
 
 fn text_of(element: Option<ElementRef>) -> String {

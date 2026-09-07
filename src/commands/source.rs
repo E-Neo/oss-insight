@@ -1,16 +1,16 @@
+use std::time::Duration;
+
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
 use oss_insight_source::GithubBuilder;
 
+use crate::commands::config::Config;
 use crate::commands::util::stdin_or_iter;
 
 #[derive(Subcommand)]
 pub enum SourceCommands {
     /// Source for GitHub.
     Github {
-        /// GitHub token.
-        #[arg(long)]
-        token: Option<String>,
         #[command(subcommand)]
         command: GithubCommands,
     },
@@ -94,14 +94,23 @@ pub enum GithubPeriod {
 }
 
 impl SourceCommands {
-    pub async fn exec(&self) -> Result<()> {
+    pub async fn exec(&self, config: &Config) -> Result<()> {
         match self {
-            SourceCommands::Github { token, command } => {
-                let github_builder = if let Some(token) = token {
-                    GithubBuilder::new().token(String::from(token))
-                } else {
-                    GithubBuilder::new()
-                };
+            SourceCommands::Github { command } => {
+                let github_config = &config.source.github;
+                let client_config = &config.http.client;
+                let mut github_builder = GithubBuilder::new(
+                    Duration::from_secs(client_config.min_delay_secs),
+                    Duration::from_secs(client_config.max_delay_secs),
+                    Duration::from_secs(client_config.max_retry_time_secs),
+                    client_config.user_agent.clone(),
+                );
+                if let Some(token) = &github_config.token {
+                    github_builder = github_builder.token(token.clone());
+                }
+                for path in &client_config.root_certificates {
+                    github_builder = github_builder.add_root_certificate_path(path);
+                }
                 match command {
                     GithubCommands::Repo { api, stdin, key } => {
                         let mut github = github_builder.build();
