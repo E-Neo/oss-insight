@@ -18,6 +18,13 @@ pub struct SourceConfig {
 #[derive(Debug, Deserialize)]
 pub struct GithubConfig {
     pub token: Option<String>,
+    pub trending: TrendingConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrendingConfig {
+    pub periods: Vec<GithubPeriod>,
+    pub languages: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,12 +53,29 @@ impl Config {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GithubPeriod {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl GithubPeriod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GithubPeriod::Daily => "daily",
+            GithubPeriod::Weekly => "weekly",
+            GithubPeriod::Monthly => "monthly",
+        }
+    }
+}
+
 fn home_dir() -> PathBuf {
     match env::var("OSS_INSIGHT_HOME") {
         Ok(home) => PathBuf::from(home),
-        Err(_) => {
-            let home = env::var("HOME").expect("neither OSS_INSIGHT_HOME nor HOME is set");
-            PathBuf::from(home).join(".oss-insight")
-        }
+        Err(_) => env::home_dir()
+            .expect("cannot determine home directory")
+            .join(".oss-insight"),
     }
 }

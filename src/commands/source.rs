@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use oss_insight_source::GithubBuilder;
 
 use crate::commands::config::Config;
@@ -52,13 +52,7 @@ pub enum GithubCommands {
         key: Vec<String>,
     },
     /// Prints trending repositories as JSON lines.
-    Trending {
-        /// Period of trending repositories.
-        #[arg(long)]
-        period: GithubPeriod,
-        /// Language of trending repositories.
-        lang: String,
-    },
+    Trending,
 }
 
 #[derive(Args)]
@@ -81,16 +75,6 @@ pub struct GithubUserApi {
     /// By id.
     #[arg(long, group = "api")]
     id: bool,
-}
-
-#[derive(Clone, ValueEnum)]
-pub enum GithubPeriod {
-    #[value(name = "daily")]
-    Daily,
-    #[value(name = "weekly")]
-    Weekly,
-    #[value(name = "monthly")]
-    Monthly,
 }
 
 impl SourceCommands {
@@ -157,14 +141,15 @@ impl SourceCommands {
                             }
                         }
                     }
-                    GithubCommands::Trending { period, lang } => {
+                    GithubCommands::Trending => {
                         let mut github = github_builder.build();
-                        let repos = github
-                            .trending(lang, period.to_possible_value().unwrap().get_name())
-                            .await?
-                            .data;
-                        for repo in repos {
-                            println!("{}", serde_json::to_string(&repo)?);
+                        for lang in &github_config.trending.languages {
+                            for period in &github_config.trending.periods {
+                                let repos = github.trending(lang, period.as_str()).await?.data;
+                                for repo in repos {
+                                    println!("{}", serde_json::to_string(&repo)?);
+                                }
+                            }
                         }
                     }
                 }
