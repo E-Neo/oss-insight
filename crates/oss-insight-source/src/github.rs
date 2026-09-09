@@ -19,6 +19,9 @@ const TRENDING_BASE_URL: &str = "https://github.com/trending";
 
 const MEDIA_TYPE_DEFAULT: &str = "application/vnd.github+json";
 
+const PER_PAGE: u32 = 30;
+const SEARCH_PER_PAGE: u32 = 100;
+
 pub struct GithubBuilder {
     token: Option<String>,
     min_delay: Duration,
@@ -162,7 +165,9 @@ pub struct Repo {
     pub custom_properties: Option<Value>,
     #[serde(default)]
     pub organization: Option<SimpleUser>,
+    #[serde(default)]
     pub network_count: u64,
+    #[serde(default)]
     pub subscribers_count: u64,
     pub has_issues: bool,
     pub has_projects: bool,
@@ -238,6 +243,55 @@ pub struct TrendingRepo {
     pub stars_this_period: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StargazerHistory {
+    pub week: u64,
+    pub total: u64,
+    pub days: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RepoSearch {
+    pub total_count: u64,
+    #[serde(default)]
+    pub incomplete_results: bool,
+    pub items: Vec<Repo>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SearchSort {
+    Stars,
+    Forks,
+    HelpWantedIssues,
+    Updated,
+}
+
+impl SearchSort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SearchSort::Stars => "stars",
+            SearchSort::Forks => "forks",
+            SearchSort::HelpWantedIssues => "help-wanted-issues",
+            SearchSort::Updated => "updated",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SearchOrder {
+    Asc,
+    Desc,
+}
+
+impl SearchOrder {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SearchOrder::Asc => "asc",
+            SearchOrder::Desc => "desc",
+        }
+    }
+}
+
 impl Github {
     pub async fn repo(&mut self, full_name: &str) -> SourceResult<SourceResponse<Repo>> {
         self.get(format!("{BASE_URL}/repos/{full_name}")).await
@@ -263,6 +317,55 @@ impl Github {
 
     pub async fn user_by_id(&mut self, id: u64) -> SourceResult<SourceResponse<User>> {
         self.get(format!("{BASE_URL}/user/{id}")).await
+    }
+
+    pub async fn stargazer_history(
+        &mut self,
+        full_name: &str,
+        page: u32,
+    ) -> SourceResult<SourceResponse<Vec<StargazerHistory>>> {
+        let builder = self
+            .client
+            .get(format!("{BASE_URL}/repos/{full_name}/stargazers/history"))
+            .query(&[("per_page", PER_PAGE), ("page", page)])
+            .header(ACCEPT, MEDIA_TYPE_DEFAULT);
+        get_json(&mut self.client, builder).await
+    }
+
+    pub async fn stargazer_history_by_id(
+        &mut self,
+        id: u64,
+        page: u32,
+    ) -> SourceResult<SourceResponse<Vec<StargazerHistory>>> {
+        let builder = self
+            .client
+            .get(format!("{BASE_URL}/repositories/{id}/stargazers/history"))
+            .query(&[("per_page", PER_PAGE), ("page", page)])
+            .header(ACCEPT, MEDIA_TYPE_DEFAULT);
+        get_json(&mut self.client, builder).await
+    }
+
+    pub async fn search_repos(
+        &mut self,
+        query: &str,
+        page: u32,
+        sort: SearchSort,
+        order: SearchOrder,
+    ) -> SourceResult<SourceResponse<RepoSearch>> {
+        let per_page = SEARCH_PER_PAGE.to_string();
+        let page = page.to_string();
+        let builder = self
+            .client
+            .get(format!("{BASE_URL}/search/repositories"))
+            .query(&[
+                ("q", query),
+                ("per_page", per_page.as_str()),
+                ("page", page.as_str()),
+                ("sort", sort.as_str()),
+                ("order", order.as_str()),
+            ])
+            .header(ACCEPT, MEDIA_TYPE_DEFAULT);
+        get_json(&mut self.client, builder).await
     }
 
     pub async fn trending(

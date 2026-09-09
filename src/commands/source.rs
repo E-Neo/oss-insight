@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::{Args, Subcommand};
-use oss_insight_source::GithubBuilder;
+use clap::{Args, Subcommand, ValueEnum};
+use oss_insight_source::{GithubBuilder, SearchOrder, SearchSort};
 
 use crate::commands::config::Config;
 use crate::commands::util::stdin_or_iter;
@@ -51,8 +51,33 @@ pub enum GithubCommands {
         #[arg(group = "input")]
         key: Vec<String>,
     },
+    /// Prints weekly star history as JSON lines.
+    StarHistory {
+        #[command(flatten)]
+        api: GithubRepoApi,
+        /// Read from stdin.
+        #[arg(long, group = "input")]
+        stdin: bool,
+        /// List of full_name or id.
+        #[arg(group = "input")]
+        key: Vec<String>,
+    },
     /// Prints trending repositories as JSON lines.
     Trending,
+    /// Prints repositories matching a search query as JSON lines.
+    Search {
+        /// GitHub search query, e.g. language:rust created:>2026-06-01.
+        query: String,
+        /// Sort field.
+        #[arg(long)]
+        sort: SearchSortArg,
+        /// Sort order.
+        #[arg(long)]
+        order: SearchOrderArg,
+        /// Maximum number of pages to fetch.
+        #[arg(long)]
+        max_pages: u32,
+    },
 }
 
 #[derive(Args)]
@@ -75,6 +100,40 @@ pub struct GithubUserApi {
     /// By id.
     #[arg(long, group = "api")]
     id: bool,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum SearchSortArg {
+    Stars,
+    Forks,
+    HelpWantedIssues,
+    Updated,
+}
+
+impl SearchSortArg {
+    fn into_sort(self) -> SearchSort {
+        match self {
+            SearchSortArg::Stars => SearchSort::Stars,
+            SearchSortArg::Forks => SearchSort::Forks,
+            SearchSortArg::HelpWantedIssues => SearchSort::HelpWantedIssues,
+            SearchSortArg::Updated => SearchSort::Updated,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum SearchOrderArg {
+    Asc,
+    Desc,
+}
+
+impl SearchOrderArg {
+    fn into_order(self) -> SearchOrder {
+        match self {
+            SearchOrderArg::Asc => SearchOrder::Asc,
+            SearchOrderArg::Desc => SearchOrder::Desc,
+        }
+    }
 }
 
 impl SourceCommands {
@@ -141,6 +200,39 @@ impl SourceCommands {
                             }
                         }
                     }
+                    GithubCommands::StarHistory { api, stdin, key } => {
+                        let mut github = github_builder.build();
+                        let lines = stdin_or_iter(*stdin, key);
+                        if api.full_name {
+                            for line in lines {
+                                let full_name = line?;
+                                for page in 1.. {
+                                    let history =
+                                        github.stargazer_history(&full_name, page).await?.data;
+                                    if history.is_empty() {
+                                        break;
+                                    }
+                                    for week in history {
+                                        println!("{}", serde_json::to_string(&week)?);
+                                    }
+                                }
+                            }
+                        } else if api.id {
+                            for line in lines {
+                                let id: u64 = line?.parse()?;
+                                for page in 1.. {
+                                    let history =
+                                        github.stargazer_history_by_id(id, page).await?.data;
+                                    if history.is_empty() {
+                                        break;
+                                    }
+                                    for week in history {
+                                        println!("{}", serde_json::to_string(&week)?);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     GithubCommands::Trending => {
                         let mut github = github_builder.build();
                         for lang in &github_config.trending.languages {
@@ -149,6 +241,25 @@ impl SourceCommands {
                                 for repo in repos {
                                     println!("{}", serde_json::to_string(&repo)?);
                                 }
+                            }
+                        }
+                    }
+                    GithubCommands::Search {
+                        query,
+                        sort,
+                        order,
+                        max_pages,
+                    } => {
+                        let mut github = github_builder.build();
+                        let sort = sort.into_sort();
+                        let order = order.into_order();
+                        for page in 1..=*max_pages {
+                            let search = github.search_repos(query, page, sort, order).await?;
+                            if search.data.items.is_empty() {
+                                break;
+                            }
+                            for repo in search.data.items {
+                                println!("{}", serde_json::to_string(&repo)?);
                             }
                         }
                     }
