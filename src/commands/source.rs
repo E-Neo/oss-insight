@@ -152,7 +152,8 @@ impl SourceCommands {
                     github_builder = github_builder.token(token.clone());
                 }
                 for path in &client_config.root_certificates {
-                    github_builder = github_builder.add_root_certificate_path(path);
+                    github_builder =
+                        github_builder.add_root_certificate_path(config.resolve_home_path(path));
                 }
                 match command {
                     GithubCommands::Repo { api, stdin, key } => {

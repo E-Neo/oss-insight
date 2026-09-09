@@ -160,10 +160,6 @@ pub struct Repo {
     pub watchers: u64,
     pub default_branch: String,
     #[serde(default)]
-    pub temp_clone_token: Option<String>,
-    #[serde(default)]
-    pub custom_properties: Option<Value>,
-    #[serde(default)]
     pub organization: Option<SimpleUser>,
     #[serde(default)]
     pub network_count: u64,

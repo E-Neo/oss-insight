@@ -8,6 +8,7 @@ use serde::Deserialize;
 pub struct Config {
     pub source: SourceConfig,
     pub http: HttpConfig,
+    pub db: DbConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,7 +39,13 @@ pub struct HttpClientConfig {
     pub min_delay_secs: u64,
     pub max_delay_secs: u64,
     pub max_retry_time_secs: u64,
+    #[serde(default)]
     pub root_certificates: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DbConfig {
+    pub path: String,
 }
 
 impl Config {
@@ -50,6 +57,17 @@ impl Config {
         let config =
             toml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))?;
         Ok(config)
+    }
+
+    pub fn db_path(&self) -> Result<PathBuf> {
+        if self.db.path.is_empty() {
+            anyhow::bail!("[db] path must not be empty");
+        }
+        Ok(home_dir().join(&self.db.path))
+    }
+
+    pub fn resolve_home_path(&self, relative: &str) -> PathBuf {
+        home_dir().join(relative)
     }
 }
 
