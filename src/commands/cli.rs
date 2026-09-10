@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use oss_insight_db::Db;
 
-use crate::commands::{config::Config, source::SourceCommands};
+use crate::commands::{config::Config, source::SourceCommands, workflow};
 
 #[derive(Parser)]
 #[command(version)]
@@ -18,6 +18,8 @@ enum Commands {
         #[command(subcommand)]
         command: SourceCommands,
     },
+    /// Runs the github-trending workflow.
+    Workflow,
 }
 
 impl Cli {
@@ -26,6 +28,7 @@ impl Cli {
         let _db = Db::open(&config.db_path()?).await?;
         match &self.command {
             Commands::Source { command } => command.exec(&config).await?,
+            Commands::Workflow => workflow::run(&config).await?,
         }
         Ok(())
     }

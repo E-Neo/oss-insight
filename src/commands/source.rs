@@ -2,10 +2,28 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
-use oss_insight_source::{GithubBuilder, SearchOrder, SearchSort};
+use oss_insight_source::{Github, GithubBuilder, SearchOrder, SearchSort};
 
 use crate::commands::config::Config;
 use crate::commands::util::stdin_or_iter;
+
+pub(crate) fn github_from_config(config: &Config) -> Github {
+    let github_config = &config.source.github;
+    let client_config = &config.http.client;
+    let mut builder = GithubBuilder::new(
+        Duration::from_secs(client_config.min_delay_secs),
+        Duration::from_secs(client_config.max_delay_secs),
+        Duration::from_secs(client_config.max_retry_time_secs),
+        client_config.user_agent.clone(),
+    );
+    if let Some(token) = &github_config.token {
+        builder = builder.token(token.clone());
+    }
+    for path in &client_config.root_certificates {
+        builder = builder.add_root_certificate_path(config.resolve_home_path(path));
+    }
+    builder.build()
+}
 
 #[derive(Subcommand)]
 pub enum SourceCommands {
@@ -140,24 +158,9 @@ impl SourceCommands {
     pub async fn exec(&self, config: &Config) -> Result<()> {
         match self {
             SourceCommands::Github { command } => {
-                let github_config = &config.source.github;
-                let client_config = &config.http.client;
-                let mut github_builder = GithubBuilder::new(
-                    Duration::from_secs(client_config.min_delay_secs),
-                    Duration::from_secs(client_config.max_delay_secs),
-                    Duration::from_secs(client_config.max_retry_time_secs),
-                    client_config.user_agent.clone(),
-                );
-                if let Some(token) = &github_config.token {
-                    github_builder = github_builder.token(token.clone());
-                }
-                for path in &client_config.root_certificates {
-                    github_builder =
-                        github_builder.add_root_certificate_path(config.resolve_home_path(path));
-                }
+                let mut github = github_from_config(config);
                 match command {
                     GithubCommands::Repo { api, stdin, key } => {
-                        let mut github = github_builder.build();
                         let lines = stdin_or_iter(*stdin, key);
                         if api.full_name {
                             for line in lines {
@@ -172,7 +175,6 @@ impl SourceCommands {
                         }
                     }
                     GithubCommands::Readme { api, stdin, key } => {
-                        let mut github = github_builder.build();
                         let lines = stdin_or_iter(*stdin, key);
                         if api.full_name {
                             for line in lines {
@@ -187,7 +189,6 @@ impl SourceCommands {
                         }
                     }
                     GithubCommands::User { api, stdin, key } => {
-                        let mut github = github_builder.build();
                         let lines = stdin_or_iter(*stdin, key);
                         if api.login {
                             for line in lines {
@@ -202,7 +203,6 @@ impl SourceCommands {
                         }
                     }
                     GithubCommands::StarHistory { api, stdin, key } => {
-                        let mut github = github_builder.build();
                         let lines = stdin_or_iter(*stdin, key);
                         if api.full_name {
                             for line in lines {
@@ -235,9 +235,9 @@ impl SourceCommands {
                         }
                     }
                     GithubCommands::Trending => {
-                        let mut github = github_builder.build();
-                        for lang in &github_config.trending.languages {
-                            for period in &github_config.trending.periods {
+                        let trending = &config.source.github.trending;
+                        for lang in &trending.languages {
+                            for period in &trending.periods {
                                 let repos = github.trending(lang, period.as_str()).await?.data;
                                 for repo in repos {
                                     println!("{}", serde_json::to_string(&repo)?);
@@ -251,7 +251,6 @@ impl SourceCommands {
                         order,
                         max_pages,
                     } => {
-                        let mut github = github_builder.build();
                         let sort = sort.into_sort();
                         let order = order.into_order();
                         for page in 1..=*max_pages {

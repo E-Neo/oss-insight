@@ -36,6 +36,11 @@ pub async fn fetch(
         return Err(SourceError::Status(status, body));
     }
     let body = resp.text().await?;
+    tracing::debug!(
+        body = %body,
+        elapsed_ms = start.elapsed().as_millis(),
+        "source response body"
+    );
     Ok((body, start.elapsed()))
 }
 

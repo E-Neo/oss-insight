@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use oss_insight_source::{Readme, Repo, SimpleUser, StargazerHistory, User};
+use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
 #[derive(Debug, thiserror::Error)]
@@ -22,7 +23,7 @@ pub enum DbError {
 
 pub type Result<T> = std::result::Result<T, DbError>;
 
-const MIGRATIONS: [&str; 5] = [
+const MIGRATIONS: [&str; 7] = [
     "CREATE TABLE IF NOT EXISTS github_users (
         id                INTEGER PRIMARY KEY,
         login             TEXT    NOT NULL UNIQUE,
@@ -47,6 +48,7 @@ const MIGRATIONS: [&str; 5] = [
         following         INTEGER,
         github_created_at TEXT,
         github_updated_at TEXT,
+        full_updated_at   INTEGER,
         created_at        INTEGER NOT NULL,
         updated_at        INTEGER NOT NULL
     )",
@@ -123,6 +125,22 @@ const MIGRATIONS: [&str; 5] = [
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (repo_id)
     )",
+    "CREATE TABLE IF NOT EXISTS github_workflows (
+        id          INTEGER PRIMARY KEY,
+        workflow    TEXT    NOT NULL,
+        status      TEXT    NOT NULL,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS github_workflow_items (
+        workflow_id INTEGER NOT NULL REFERENCES github_workflows(id),
+        task        TEXT    NOT NULL,
+        params      TEXT    NOT NULL,
+        status      TEXT    NOT NULL DEFAULT 'pending',
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL,
+        PRIMARY KEY (workflow_id, task)
+    )",
 ];
 
 pub struct Db {
@@ -160,15 +178,16 @@ impl Db {
     }
 
     pub async fn upsert_user(&self, user: &User) -> Result<()> {
-        self.insert_user_row(&UserRow::from(user)).await
+        self.insert_user_row(&UserRow::from(user), Some(now()))
+            .await
     }
 
     pub async fn upsert_repo(&self, repo: &Repo) -> Result<()> {
         let owner = UserRow::from(&repo.owner);
         let organization = repo.organization.as_ref().map(UserRow::from);
-        self.insert_user_row(&owner).await?;
+        self.insert_user_row(&owner, None).await?;
         if let Some(org) = &organization {
-            self.insert_user_row(org).await?;
+            self.insert_user_row(org, None).await?;
         }
         let repo_row = RepoRow::from(repo);
         let owner_id = owner.id;
@@ -186,10 +205,7 @@ impl Db {
         sqlx::query(
             "INSERT INTO github_repos (id, full_name, name, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE
-             SET full_name = excluded.full_name,
-                 name = excluded.name,
-                 updated_at = excluded.updated_at",
+             ON CONFLICT(id) DO NOTHING",
         )
         .bind(id as i64)
         .bind(full_name)
@@ -281,16 +297,179 @@ impl Db {
         Ok(())
     }
 
-    async fn insert_user_row(&self, row: &UserRow) -> Result<()> {
+    pub async fn last_workflow(&self, workflow: &str) -> Result<Option<Workflow>> {
+        Ok(sqlx::query_as::<_, Workflow>(
+            "SELECT id, workflow, status, created_at, updated_at
+               FROM github_workflows
+              WHERE workflow = ?
+              ORDER BY id DESC
+              LIMIT 1",
+        )
+        .bind(workflow)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_workflow(
+        &self,
+        workflow: &str,
+        created_at: i64,
+        items: &[WorkflowItem],
+    ) -> Result<Workflow> {
+        let result = sqlx::query(
+            "INSERT INTO github_workflows (workflow, status, created_at, updated_at)
+             VALUES (?, 'running', ?, ?)",
+        )
+        .bind(workflow)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+        let id = result.last_insert_rowid();
+        self.ensure_workflow_items(id, items).await?;
+        Ok(Workflow {
+            id,
+            workflow: workflow.to_string(),
+            status: "running".to_string(),
+            created_at,
+            updated_at: created_at,
+        })
+    }
+
+    pub async fn ensure_workflow_items(
+        &self,
+        workflow_id: i64,
+        items: &[WorkflowItem],
+    ) -> Result<()> {
+        let now = now();
+        for item in items {
+            sqlx::query(
+                "INSERT INTO github_workflow_items (workflow_id, task, params, status, created_at, updated_at)
+                 VALUES (?, ?, ?, 'pending', ?, ?)
+                 ON CONFLICT(workflow_id, task) DO NOTHING",
+            )
+            .bind(workflow_id)
+            .bind(&item.task)
+            .bind(&item.params)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn pending_workflow_items(&self, workflow_id: i64) -> Result<Vec<WorkflowItem>> {
+        Ok(sqlx::query_as::<_, WorkflowItem>(
+            "SELECT task, params, status
+               FROM github_workflow_items
+              WHERE workflow_id = ?
+                AND status = 'pending'",
+        )
+        .bind(workflow_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn mark_workflow_item_done(&self, workflow_id: i64, task: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE github_workflow_items
+                SET status = 'done',
+                    updated_at = ?
+              WHERE workflow_id = ?
+                AND task = ?",
+        )
+        .bind(now())
+        .bind(workflow_id)
+        .bind(task)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_workflow_done(&self, workflow_id: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE github_workflows
+                SET status = 'done',
+                    updated_at = ?
+              WHERE id = ?",
+        )
+        .bind(now())
+        .bind(workflow_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn repo_updated_at(&self, id: u64) -> Result<Option<i64>> {
+        Ok(sqlx::query_scalar(
+            "SELECT updated_at
+               FROM github_repos
+              WHERE id = ?",
+        )
+        .bind(id as i64)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn user_full_updated_at(&self, id: u64) -> Result<Option<i64>> {
+        Ok(sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT full_updated_at
+               FROM github_users
+              WHERE id = ?",
+        )
+        .bind(id as i64)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten())
+    }
+
+    pub async fn star_history_updated_at(&self, repo_id: u64) -> Result<Option<i64>> {
+        Ok(sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MAX(updated_at)
+               FROM github_star_history
+              WHERE repo_id = ?",
+        )
+        .bind(repo_id as i64)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten())
+    }
+
+    pub async fn readme_updated_at(&self, repo_id: u64) -> Result<Option<i64>> {
+        Ok(sqlx::query_scalar(
+            "SELECT updated_at
+               FROM github_readmes
+              WHERE repo_id = ?",
+        )
+        .bind(repo_id as i64)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn repo_owner(&self, repo_id: u64) -> Result<Option<(i64, String)>> {
+        Ok(sqlx::query_as::<_, (i64, String)>(
+            "SELECT u.id, u.login
+               FROM github_repos AS r
+                    JOIN github_users AS u
+                      ON r.owner_id = u.id
+              WHERE r.id = ?",
+        )
+        .bind(repo_id as i64)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    async fn insert_user_row(&self, row: &UserRow, full_updated_at: Option<i64>) -> Result<()> {
         let now = now();
         sqlx::query(
             "INSERT INTO github_users (
                 id, login, node_id, avatar_url, gravatar_id, html_url, type, user_view_type,
                 site_admin, name, company, blog, location, email, hireable, bio, twitter_username,
                 public_repos, public_gists, followers, following, github_created_at, github_updated_at,
-                created_at, updated_at
+                full_updated_at, created_at, updated_at
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE
              SET login = excluded.login,
                  node_id = excluded.node_id,
@@ -314,6 +493,7 @@ impl Db {
                  following = excluded.following,
                  github_created_at = excluded.github_created_at,
                  github_updated_at = excluded.github_updated_at,
+                 full_updated_at = COALESCE(excluded.full_updated_at, github_users.full_updated_at),
                  updated_at = excluded.updated_at",
         )
         .bind(row.id)
@@ -339,6 +519,7 @@ impl Db {
         .bind(row.following)
         .bind(row.github_created_at.as_deref())
         .bind(row.github_updated_at.as_deref())
+        .bind(full_updated_at)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -637,6 +818,22 @@ impl From<&Repo> for RepoRow {
             subscribers_count: r.subscribers_count as i64,
         }
     }
+}
+
+#[derive(FromRow)]
+pub struct Workflow {
+    pub id: i64,
+    pub workflow: String,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(FromRow)]
+pub struct WorkflowItem {
+    pub task: String,
+    pub params: String,
+    pub status: String,
 }
 
 #[cfg(test)]
@@ -947,5 +1144,117 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(content, "second");
+    }
+
+    #[tokio::test]
+    async fn workflow_lifecycle() {
+        let db = test_db().await;
+        let items = [
+            WorkflowItem {
+                task: "trending:rust:weekly".to_string(),
+                params: "{\"language\":\"rust\",\"period\":\"weekly\"}".to_string(),
+                status: "pending".to_string(),
+            },
+            WorkflowItem {
+                task: "search:rust".to_string(),
+                params: "{\"language\":\"rust\"}".to_string(),
+                status: "pending".to_string(),
+            },
+        ];
+
+        let crawl = db
+            .create_workflow("github-trending", 1000, &items)
+            .await
+            .unwrap();
+        assert_eq!(crawl.status, "running");
+        assert_eq!(crawl.created_at, 1000);
+
+        let last = db.last_workflow("github-trending").await.unwrap().unwrap();
+        assert_eq!(last.id, crawl.id);
+        assert_eq!(last.status, "running");
+
+        let pending = db.pending_workflow_items(crawl.id).await.unwrap();
+        assert_eq!(pending.len(), 2);
+
+        db.mark_workflow_item_done(crawl.id, "trending:rust:weekly")
+            .await
+            .unwrap();
+        let pending = db.pending_workflow_items(crawl.id).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].task, "search:rust");
+
+        db.ensure_workflow_items(crawl.id, &items).await.unwrap();
+        let all: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM github_workflow_items WHERE workflow_id = ?")
+                .bind(crawl.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(all, 2, "re-ensuring items must not duplicate");
+
+        db.mark_workflow_done(crawl.id).await.unwrap();
+        let last = db.last_workflow("github-trending").await.unwrap().unwrap();
+        assert_eq!(last.status, "done");
+    }
+
+    #[tokio::test]
+    async fn staleness_getters() {
+        let db = test_db().await;
+        assert!(db.repo_updated_at(7).await.unwrap().is_none());
+        assert!(db.readme_updated_at(7).await.unwrap().is_none());
+        assert!(db.star_history_updated_at(7).await.unwrap().is_none());
+        assert!(db.repo_owner(7).await.unwrap().is_none());
+
+        db.upsert_repo(&repo(7, "acme/widget")).await.unwrap();
+        assert!(db.repo_updated_at(7).await.unwrap().is_some());
+        assert_eq!(
+            db.repo_owner(7).await.unwrap(),
+            Some((7, "owner".to_string()))
+        );
+        assert!(
+            db.user_full_updated_at(7).await.unwrap().is_none(),
+            "owner upserted as SimpleUser must not set full_updated_at"
+        );
+
+        db.upsert_user(&user(7)).await.unwrap();
+        assert!(
+            db.user_full_updated_at(7).await.unwrap().is_some(),
+            "full user upsert must set full_updated_at"
+        );
+
+        db.upsert_readme(7, &readme()).await.unwrap();
+        assert!(db.readme_updated_at(7).await.unwrap().is_some());
+
+        db.insert_star_history(
+            7,
+            &[StargazerHistory {
+                week: 1000,
+                total: 42,
+                days: vec![1, 2, 3, 4, 5, 6, 7],
+            }],
+            100,
+        )
+        .await
+        .unwrap();
+        assert!(db.star_history_updated_at(7).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn ensure_repo_does_not_refresh() {
+        let db = test_db().await;
+        db.ensure_repo(7, "acme/widget").await.unwrap();
+        let first: i64 = sqlx::query_scalar("SELECT updated_at FROM github_repos WHERE id = ?")
+            .bind(7)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+
+        db.ensure_repo(7, "acme/widget").await.unwrap();
+        let second: i64 = sqlx::query_scalar("SELECT updated_at FROM github_repos WHERE id = ?")
+            .bind(7)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(first, second, "ensure_repo must not fake freshness");
     }
 }

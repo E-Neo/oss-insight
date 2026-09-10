@@ -9,6 +9,7 @@ pub struct Config {
     pub source: SourceConfig,
     pub http: HttpConfig,
     pub db: DbConfig,
+    pub workflow: WorkflowConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,6 +27,14 @@ pub struct GithubConfig {
 pub struct TrendingConfig {
     pub periods: Vec<GithubPeriod>,
     pub languages: Vec<String>,
+    pub search: TrendingSearchConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TrendingSearchConfig {
+    pub stars: String,
+    pub created: String,
+    pub max_pages: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +55,12 @@ pub struct HttpClientConfig {
 #[derive(Debug, Deserialize)]
 pub struct DbConfig {
     pub path: String,
+    pub ttl_secs: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorkflowConfig {
+    pub ttl_secs: u64,
 }
 
 impl Config {
@@ -68,6 +83,10 @@ impl Config {
 
     pub fn resolve_home_path(&self, relative: &str) -> PathBuf {
         home_dir().join(relative)
+    }
+
+    pub fn log_dir() -> PathBuf {
+        home_dir().join("log")
     }
 }
 
