@@ -3,6 +3,6 @@ pub mod response;
 
 pub use github::{
     Github, GithubBuilder, License, Readme, Repo, RepoSearch, SearchOrder, SearchSort, SimpleUser,
-    StargazerHistory, TrendingRepo, User,
+    TrendingRepo, User,
 };
 pub use response::{SourceError, SourceResponse, SourceResult};

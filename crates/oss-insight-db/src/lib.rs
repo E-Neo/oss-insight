@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use oss_insight_source::{Readme, Repo, SimpleUser, StargazerHistory, User};
+use oss_insight_source::{Readme, Repo, SimpleUser, User};
 use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
@@ -23,7 +23,7 @@ pub enum DbError {
 
 pub type Result<T> = std::result::Result<T, DbError>;
 
-const MIGRATIONS: [&str; 7] = [
+const MIGRATIONS: [&str; 6] = [
     "CREATE TABLE IF NOT EXISTS github_users (
         id                INTEGER PRIMARY KEY,
         login             TEXT    NOT NULL UNIQUE,
@@ -108,18 +108,8 @@ const MIGRATIONS: [&str; 7] = [
         CHECK (repo_id IS NOT NULL OR full_name IS NOT NULL),
         UNIQUE (source, repo_id, full_name, params, created_at)
     )",
-    "CREATE TABLE IF NOT EXISTS github_star_history (
-        repo_id    INTEGER NOT NULL REFERENCES github_repos(id),
-        week       INTEGER NOT NULL,
-        total      INTEGER NOT NULL,
-        days       TEXT    NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (repo_id, week)
-    )",
     "CREATE TABLE IF NOT EXISTS github_readmes (
         repo_id    INTEGER NOT NULL REFERENCES github_repos(id),
-        name       TEXT    NOT NULL,
         content    TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
@@ -243,34 +233,6 @@ impl Db {
         Ok(())
     }
 
-    pub async fn insert_star_history(
-        &self,
-        repo_id: u64,
-        weeks: &[StargazerHistory],
-        created_at: i64,
-    ) -> Result<()> {
-        for week in weeks {
-            let days = serde_json::to_string(&week.days)?;
-            sqlx::query(
-                "INSERT INTO github_star_history (repo_id, week, total, days, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(repo_id, week) DO UPDATE
-                 SET total = excluded.total,
-                     days = excluded.days,
-                     updated_at = excluded.updated_at",
-            )
-            .bind(repo_id as i64)
-            .bind(week.week as i64)
-            .bind(week.total as i64)
-            .bind(days)
-            .bind(created_at)
-            .bind(created_at)
-            .execute(&self.pool)
-            .await?;
-        }
-        Ok(())
-    }
-
     pub async fn upsert_readme(&self, repo_id: u64, readme: &Readme) -> Result<()> {
         let content = if readme.encoding == "base64" {
             let cleaned: String = readme
@@ -285,15 +247,13 @@ impl Db {
         };
         let now = now();
         sqlx::query(
-            "INSERT INTO github_readmes (repo_id, name, content, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO github_readmes (repo_id, content, created_at, updated_at)
+             VALUES (?, ?, ?, ?)
              ON CONFLICT(repo_id) DO UPDATE
-             SET name = excluded.name,
-                 content = excluded.content,
+             SET content = excluded.content,
                  updated_at = excluded.updated_at",
         )
         .bind(repo_id as i64)
-        .bind(&readme.name)
         .bind(content)
         .bind(now)
         .bind(now)
@@ -429,26 +389,22 @@ impl Db {
         .flatten())
     }
 
-    pub async fn star_history_updated_at(&self, repo_id: u64) -> Result<Option<i64>> {
-        Ok(sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT MAX(updated_at)
-               FROM github_star_history
-              WHERE repo_id = ?",
+    pub async fn list_repos_needing_readme(
+        &self,
+        now: i64,
+        ttl: i64,
+    ) -> Result<Vec<(i64, String)>> {
+        Ok(sqlx::query_as::<_, (i64, String)>(
+            "SELECT r.id, r.full_name
+               FROM github_repos AS r
+                    LEFT JOIN github_readmes AS rm
+                      ON r.id = rm.repo_id
+              WHERE rm.repo_id IS NULL
+                 OR ? - rm.updated_at > ?",
         )
-        .bind(repo_id as i64)
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten())
-    }
-
-    pub async fn readme_updated_at(&self, repo_id: u64) -> Result<Option<i64>> {
-        Ok(sqlx::query_scalar(
-            "SELECT updated_at
-               FROM github_readmes
-              WHERE repo_id = ?",
-        )
-        .bind(repo_id as i64)
-        .fetch_optional(&self.pool)
+        .bind(now)
+        .bind(ttl)
+        .fetch_all(&self.pool)
         .await?)
     }
 
@@ -1075,49 +1031,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upserts_star_history() {
-        let db = test_db().await;
-        db.ensure_repo(5, "acme/widget").await.unwrap();
-        let weeks = [StargazerHistory {
-            week: 1000,
-            total: 10,
-            days: vec![1, 2, 3, 4, 5, 6, 7],
-        }];
-
-        db.insert_star_history(5, &weeks, 100).await.unwrap();
-        db.insert_star_history(
-            5,
-            &[StargazerHistory {
-                week: 1000,
-                total: 42,
-                days: vec![1, 2, 3, 4, 5, 6, 7],
-            }],
-            100,
-        )
-        .await
-        .unwrap();
-
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM github_star_history")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            count, 1,
-            "current-only history must overwrite, not accumulate"
-        );
-
-        let total: i64 = sqlx::query_scalar(
-            "SELECT total FROM github_star_history WHERE repo_id = ? AND week = ?",
-        )
-        .bind(5)
-        .bind(1000)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert_eq!(total, 42);
-    }
-
-    #[tokio::test]
     async fn upserts_readme() {
         let db = test_db().await;
         db.ensure_repo(9, "acme/widget").await.unwrap();
@@ -1133,7 +1046,6 @@ mod tests {
 
         let mut updated = readme();
         updated.content = "c2Vjb25k".to_string();
-        updated.name = "README-2.md".to_string();
         db.upsert_readme(9, &updated).await.unwrap();
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM github_readmes")
@@ -1223,8 +1135,6 @@ mod tests {
     async fn staleness_getters() {
         let db = test_db().await;
         assert!(db.repo_updated_at(7).await.unwrap().is_none());
-        assert!(db.readme_updated_at(7).await.unwrap().is_none());
-        assert!(db.star_history_updated_at(7).await.unwrap().is_none());
         assert!(db.repo_owner(7).await.unwrap().is_none());
 
         db.upsert_repo(&repo(7, "acme/widget")).await.unwrap();
@@ -1243,22 +1153,40 @@ mod tests {
             db.user_full_updated_at(7).await.unwrap().is_some(),
             "full user upsert must set full_updated_at"
         );
+    }
 
-        db.upsert_readme(7, &readme()).await.unwrap();
-        assert!(db.readme_updated_at(7).await.unwrap().is_some());
+    #[tokio::test]
+    async fn lists_repos_needing_readme() {
+        let db = test_db().await;
+        db.ensure_repo(1, "acme/missing").await.unwrap();
+        db.ensure_repo(2, "acme/fresh").await.unwrap();
+        db.ensure_repo(3, "acme/stale").await.unwrap();
 
-        db.insert_star_history(
-            7,
-            &[StargazerHistory {
-                week: 1000,
-                total: 42,
-                days: vec![1, 2, 3, 4, 5, 6, 7],
-            }],
-            100,
-        )
-        .await
-        .unwrap();
-        assert!(db.star_history_updated_at(7).await.unwrap().is_some());
+        db.upsert_readme(2, &readme()).await.unwrap();
+        sqlx::query("UPDATE github_readmes SET updated_at = ? WHERE repo_id = ?")
+            .bind(9000)
+            .bind(2)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        db.upsert_readme(3, &readme()).await.unwrap();
+        sqlx::query("UPDATE github_readmes SET updated_at = ? WHERE repo_id = ?")
+            .bind(100)
+            .bind(3)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        let mut needing = db.list_repos_needing_readme(1000, 100).await.unwrap();
+        needing.sort();
+        assert_eq!(
+            needing,
+            vec![
+                (1, "acme/missing".to_string()),
+                (3, "acme/stale".to_string())
+            ]
+        );
     }
 
     #[tokio::test]

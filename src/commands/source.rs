@@ -75,17 +75,6 @@ pub enum GithubCommands {
         #[arg(group = "input")]
         key: Vec<String>,
     },
-    /// Prints weekly star history as JSON lines.
-    StarHistory {
-        #[command(flatten)]
-        api: GithubRepoApi,
-        /// Read from stdin.
-        #[arg(long, group = "input")]
-        stdin: bool,
-        /// List of full_name or id.
-        #[arg(group = "input")]
-        key: Vec<String>,
-    },
     /// Prints trending repositories as JSON lines.
     Trending,
     /// Prints repositories matching a search query as JSON lines.
@@ -205,38 +194,6 @@ impl SourceCommands {
                             for line in lines {
                                 let resp = github.user_by_id(line?.parse()?).await?;
                                 println!("{}", serde_json::to_string(&resp.data)?);
-                            }
-                        }
-                    }
-                    GithubCommands::StarHistory { api, stdin, key } => {
-                        let lines = stdin_or_iter(*stdin, key);
-                        if api.full_name {
-                            for line in lines {
-                                let full_name = line?;
-                                for page in 1.. {
-                                    let history =
-                                        github.stargazer_history(&full_name, page).await?.data;
-                                    if history.is_empty() {
-                                        break;
-                                    }
-                                    for week in history {
-                                        println!("{}", serde_json::to_string(&week)?);
-                                    }
-                                }
-                            }
-                        } else if api.id {
-                            for line in lines {
-                                let id: u64 = line?.parse()?;
-                                for page in 1.. {
-                                    let history =
-                                        github.stargazer_history_by_id(id, page).await?.data;
-                                    if history.is_empty() {
-                                        break;
-                                    }
-                                    for week in history {
-                                        println!("{}", serde_json::to_string(&week)?);
-                                    }
-                                }
                             }
                         }
                     }

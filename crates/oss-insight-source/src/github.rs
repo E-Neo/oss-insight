@@ -19,7 +19,6 @@ const TRENDING_BASE_URL: &str = "https://github.com/trending";
 
 const MEDIA_TYPE_DEFAULT: &str = "application/vnd.github+json";
 
-const PER_PAGE: u32 = 30;
 const SEARCH_PER_PAGE: u32 = 100;
 
 pub struct GithubBuilder {
@@ -260,13 +259,6 @@ pub struct TrendingRepo {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct StargazerHistory {
-    pub week: u64,
-    pub total: u64,
-    pub days: Vec<u64>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoSearch {
     pub total_count: u64,
     #[serde(default)]
@@ -333,32 +325,6 @@ impl Github {
 
     pub async fn user_by_id(&mut self, id: u64) -> SourceResult<SourceResponse<User>> {
         self.get(format!("{BASE_URL}/user/{id}")).await
-    }
-
-    pub async fn stargazer_history(
-        &mut self,
-        full_name: &str,
-        page: u32,
-    ) -> SourceResult<SourceResponse<Vec<StargazerHistory>>> {
-        let builder = self
-            .client
-            .get(format!("{BASE_URL}/repos/{full_name}/stargazers/history"))
-            .query(&[("per_page", PER_PAGE), ("page", page)])
-            .header(ACCEPT, MEDIA_TYPE_DEFAULT);
-        get_json(&mut self.client, builder).await
-    }
-
-    pub async fn stargazer_history_by_id(
-        &mut self,
-        id: u64,
-        page: u32,
-    ) -> SourceResult<SourceResponse<Vec<StargazerHistory>>> {
-        let builder = self
-            .client
-            .get(format!("{BASE_URL}/repositories/{id}/stargazers/history"))
-            .query(&[("per_page", PER_PAGE), ("page", page)])
-            .header(ACCEPT, MEDIA_TYPE_DEFAULT);
-        get_json(&mut self.client, builder).await
     }
 
     pub async fn search_repos(

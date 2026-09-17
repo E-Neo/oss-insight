@@ -46,9 +46,29 @@ pub async fn run(config: &Config) -> Result<()> {
         }
     }
 
+    if let Err(e) = sync_readmes(&mut github, &db, config).await {
+        tracing::warn!(error = ?e, "readme sync failed");
+    }
+
     if db.pending_workflow_items(crawl_id).await?.is_empty() {
         db.mark_workflow_done(crawl_id).await?;
         tracing::info!(workflow_id = crawl_id, "workflow finished");
+    }
+    Ok(())
+}
+
+async fn sync_readmes(github: &mut Github, db: &Db, config: &Config) -> Result<()> {
+    let ttl = config.db.ttl_secs as i64;
+    let repos = db.list_repos_needing_readme(now(), ttl).await?;
+    for (id, full_name) in repos {
+        match github.readme(&full_name).await {
+            Ok(readme) => {
+                if let Err(e) = db.upsert_readme(id as u64, &readme.data).await {
+                    tracing::warn!(repo = %full_name, error = ?e, "readme upsert failed");
+                }
+            }
+            Err(e) => tracing::warn!(repo = %full_name, error = ?e, "readme fetch failed"),
+        }
     }
     Ok(())
 }
@@ -165,7 +185,7 @@ async fn sync_trending_repo(
     run_at: i64,
 ) -> Result<()> {
     db.ensure_repo(repo.id, &repo.full_name).await?;
-    if let Err(e) = enrich_repo(github, db, config, repo, run_at).await {
+    if let Err(e) = enrich_repo(github, db, config, repo).await {
         tracing::warn!(repo = %repo.full_name, error = ?e, "repo enrichment failed");
     }
     db.insert_trending(
@@ -184,7 +204,6 @@ async fn enrich_repo(
     db: &Db,
     config: &Config,
     repo: &TrendingRepo,
-    run_at: i64,
 ) -> Result<()> {
     let now = now();
     let ttl = config.db.ttl_secs as i64;
@@ -205,28 +224,6 @@ async fn enrich_repo(
     {
         let user = github.user(&login).await?;
         db.upsert_user(&user.data).await?;
-    }
-
-    let history_updated = db.star_history_updated_at(repo.id).await?;
-    if history_updated.is_none() || is_stale(history_updated, now, ttl) {
-        let incremental = history_updated.is_some();
-        let mut weeks = Vec::new();
-        for page in 1.. {
-            let resp = github.stargazer_history(&repo.full_name, page).await?;
-            if resp.data.is_empty() {
-                break;
-            }
-            weeks.extend(resp.data);
-            if incremental {
-                break;
-            }
-        }
-        db.insert_star_history(repo.id, &weeks, run_at).await?;
-    }
-
-    if is_stale(db.readme_updated_at(repo.id).await?, now, ttl) {
-        let readme = github.readme(&repo.full_name).await?;
-        db.upsert_readme(repo.id, &readme.data).await?;
     }
     Ok(())
 }
