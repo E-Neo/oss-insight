@@ -228,7 +228,7 @@ async fn enrich_repo(
     Ok(())
 }
 
-fn search_query(lang: &str, stars: &str, created: &str) -> String {
+pub(crate) fn search_query(lang: &str, stars: &str, created: &str) -> String {
     let mut query = String::new();
     if !lang.is_empty() {
         query.push_str("language:");
@@ -245,7 +245,7 @@ fn search_query(lang: &str, stars: &str, created: &str) -> String {
 
 /// Turns a relative `created` expression (e.g. `>30d`) into an absolute
 /// GitHub date fragment. Values that are not relative pass through unchanged.
-fn resolve_created(created: &str, now: i64) -> String {
+pub(crate) fn resolve_created(created: &str, now: i64) -> String {
     let (op, rest) = split_operator(created);
     let Some(days) = parse_days(rest) else {
         return created.to_string();
@@ -276,7 +276,7 @@ fn is_stale(updated_at: Option<i64>, now: i64, ttl: i64) -> bool {
     updated_at.is_none_or(|u| now - u > ttl)
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time before unix epoch")

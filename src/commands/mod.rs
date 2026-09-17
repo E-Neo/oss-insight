@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod github_trending;
 mod source;
 mod util;
 mod workflow;
