@@ -22,6 +22,12 @@ pub(crate) fn github_from_config(config: &Config) -> Github {
     for path in &client_config.root_certificates {
         builder = builder.add_root_certificate_path(config.resolve_home_path(path));
     }
+    if let Some(http_proxy) = &client_config.http_proxy {
+        builder = builder.http_proxy(http_proxy.clone());
+    }
+    if let Some(https_proxy) = &client_config.https_proxy {
+        builder = builder.https_proxy(https_proxy.clone());
+    }
     builder.build()
 }
 

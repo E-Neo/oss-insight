@@ -1,7 +1,9 @@
 use std::ops::Deref;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use reqwest::{Client, ClientBuilder, RequestBuilder, Response, StatusCode, header::HeaderMap};
+use reqwest::{
+    Client, ClientBuilder, Proxy, RequestBuilder, Response, StatusCode, header::HeaderMap,
+};
 use tokio::time::{Instant, Sleep, sleep_until};
 use tracing::warn;
 
@@ -99,6 +101,8 @@ pub struct RateLimitedClientBuilder {
     user_agent: Option<String>,
     root_certificates: Vec<reqwest::Certificate>,
     headers: HeaderMap,
+    http_proxy: Option<String>,
+    https_proxy: Option<String>,
 }
 
 impl RateLimitedClientBuilder {
@@ -110,6 +114,8 @@ impl RateLimitedClientBuilder {
             user_agent: None,
             root_certificates: Vec::new(),
             headers: HeaderMap::new(),
+            http_proxy: None,
+            https_proxy: None,
         }
     }
 
@@ -128,6 +134,16 @@ impl RateLimitedClientBuilder {
         self
     }
 
+    pub fn http_proxy(mut self, url: impl Into<String>) -> Self {
+        self.http_proxy = Some(url.into());
+        self
+    }
+
+    pub fn https_proxy(mut self, url: impl Into<String>) -> Self {
+        self.https_proxy = Some(url.into());
+        self
+    }
+
     pub fn build(self) -> RateLimitedClient {
         let mut builder = ClientBuilder::new();
         if let Some(user_agent) = self.user_agent {
@@ -135,6 +151,16 @@ impl RateLimitedClientBuilder {
         }
         for certificate in self.root_certificates {
             builder = builder.add_root_certificate(certificate);
+        }
+        if let Some(http_proxy) = &self.http_proxy {
+            builder = builder.proxy(
+                Proxy::http(http_proxy).unwrap_or_else(|e| panic!("invalid http_proxy: {e}")),
+            );
+        }
+        if let Some(https_proxy) = &self.https_proxy {
+            builder = builder.proxy(
+                Proxy::https(https_proxy).unwrap_or_else(|e| panic!("invalid https_proxy: {e}")),
+            );
         }
         if !self.headers.is_empty() {
             builder = builder.default_headers(self.headers);

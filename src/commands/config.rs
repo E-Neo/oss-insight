@@ -50,6 +50,10 @@ pub struct HttpClientConfig {
     pub max_retry_time_secs: u64,
     #[serde(default)]
     pub root_certificates: Vec<String>,
+    #[serde(default)]
+    pub http_proxy: Option<String>,
+    #[serde(default)]
+    pub https_proxy: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -29,6 +29,8 @@ pub struct GithubBuilder {
     max_retry_time: Duration,
     user_agent: String,
     root_certificates: Vec<reqwest::Certificate>,
+    http_proxy: Option<String>,
+    https_proxy: Option<String>,
 }
 
 impl GithubBuilder {
@@ -45,11 +47,23 @@ impl GithubBuilder {
             max_retry_time,
             user_agent,
             root_certificates: Vec::new(),
+            http_proxy: None,
+            https_proxy: None,
         }
     }
 
     pub fn token(mut self, token: String) -> Self {
         self.token = Some(token);
+        self
+    }
+
+    pub fn http_proxy(mut self, url: String) -> Self {
+        self.http_proxy = Some(url);
+        self
+    }
+
+    pub fn https_proxy(mut self, url: String) -> Self {
+        self.https_proxy = Some(url);
         self
     }
 
@@ -77,6 +91,12 @@ impl GithubBuilder {
                 .default_headers(headers);
         for certificate in self.root_certificates {
             client = client.add_root_certificate(certificate);
+        }
+        if let Some(http_proxy) = self.http_proxy {
+            client = client.http_proxy(http_proxy);
+        }
+        if let Some(https_proxy) = self.https_proxy {
+            client = client.https_proxy(https_proxy);
         }
         Github {
             client: client.build(),

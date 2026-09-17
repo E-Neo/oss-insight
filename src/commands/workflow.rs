@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Days};
 use oss_insight_db::{Db, Workflow, WorkflowItem};
 use oss_insight_source::{Github, SearchOrder, SearchSort, TrendingRepo};
 
@@ -129,7 +130,7 @@ async fn run_task(
             let stars = params["stars"].as_str().context("search stars")?;
             let created = params["created"].as_str().context("search created")?;
             let max_pages = params["max_pages"].as_u64().context("search max_pages")? as u32;
-            let query = search_query(lang, stars, created);
+            let query = search_query(lang, stars, &resolve_created(created, now()));
             for page in 1..=max_pages {
                 let search = github
                     .search_repos(&query, page, SearchSort::Updated, SearchOrder::Desc)
@@ -245,6 +246,35 @@ fn search_query(lang: &str, stars: &str, created: &str) -> String {
     query
 }
 
+/// Turns a relative `created` expression (e.g. `>30d`) into an absolute
+/// GitHub date fragment. Values that are not relative pass through unchanged.
+fn resolve_created(created: &str, now: i64) -> String {
+    let (op, rest) = split_operator(created);
+    let Some(days) = parse_days(rest) else {
+        return created.to_string();
+    };
+    let Some(date) = DateTime::from_timestamp(now, 0)
+        .map(|ts| ts.date_naive())
+        .and_then(|date| date.checked_sub_days(Days::new(days)))
+    else {
+        return created.to_string();
+    };
+    format!("{op}{}", date.format("%Y-%m-%d"))
+}
+
+fn split_operator(value: &str) -> (&str, &str) {
+    for op in [">=", "<=", ">", "<"] {
+        if let Some(rest) = value.strip_prefix(op) {
+            return (op, rest);
+        }
+    }
+    ("", value)
+}
+
+fn parse_days(value: &str) -> Option<u64> {
+    value.strip_suffix('d')?.parse().ok()
+}
+
 fn is_stale(updated_at: Option<i64>, now: i64, ttl: i64) -> bool {
     updated_at.is_none_or(|u| now - u > ttl)
 }
@@ -290,5 +320,27 @@ mod tests {
         let last = Some(workflow(1, "running", 1000));
         assert!(matches!(decision(last, 5000, 3600), Decision::New));
         assert!(matches!(decision(None, 5000, 3600), Decision::New));
+    }
+
+    // 2026-09-13T00:00:00Z
+    const NOW: i64 = 1789257600;
+
+    #[test]
+    fn resolve_created_relative_days() {
+        assert_eq!(resolve_created("30d", NOW), "2026-08-14");
+        assert_eq!(resolve_created(">30d", NOW), ">2026-08-14");
+        assert_eq!(resolve_created(">=7d", NOW), ">=2026-09-06");
+        assert_eq!(resolve_created("<30d", NOW), "<2026-08-14");
+        assert_eq!(resolve_created("<=1d", NOW), "<=2026-09-12");
+    }
+
+    #[test]
+    fn resolve_created_passes_through_absolute() {
+        assert_eq!(resolve_created(">2026-06-01", NOW), ">2026-06-01");
+        assert_eq!(
+            resolve_created("2026-01-01..2026-06-01", NOW),
+            "2026-01-01..2026-06-01"
+        );
+        assert_eq!(resolve_created("30", NOW), "30");
     }
 }
