@@ -163,6 +163,28 @@ async fn sync_trending_repo(
     params: &serde_json::Value,
     run_at: i64,
 ) -> Result<()> {
+    db.ensure_repo(repo.id, &repo.full_name).await?;
+    if let Err(e) = enrich_repo(github, db, config, repo, run_at).await {
+        tracing::warn!(repo = %repo.full_name, error = ?e, "repo enrichment failed");
+    }
+    db.insert_trending(
+        "github/trending",
+        Some(repo.id),
+        Some(&repo.full_name),
+        Some(params),
+        run_at,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn enrich_repo(
+    github: &mut Github,
+    db: &Db,
+    config: &Config,
+    repo: &TrendingRepo,
+    run_at: i64,
+) -> Result<()> {
     let now = now();
     let ttl = config.db.ttl_secs as i64;
 
@@ -205,15 +227,6 @@ async fn sync_trending_repo(
         let readme = github.readme(&repo.full_name).await?;
         db.upsert_readme(repo.id, &readme.data).await?;
     }
-
-    db.insert_trending(
-        "github/trending",
-        Some(repo.id),
-        Some(&repo.full_name),
-        Some(params),
-        run_at,
-    )
-    .await?;
     Ok(())
 }
 

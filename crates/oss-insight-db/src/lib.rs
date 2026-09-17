@@ -273,7 +273,12 @@ impl Db {
 
     pub async fn upsert_readme(&self, repo_id: u64, readme: &Readme) -> Result<()> {
         let content = if readme.encoding == "base64" {
-            let bytes = BASE64.decode(&readme.content)?;
+            let cleaned: String = readme
+                .content
+                .chars()
+                .filter(|c| !c.is_ascii_whitespace())
+                .collect();
+            let bytes = BASE64.decode(cleaned)?;
             String::from_utf8(bytes)?
         } else {
             readme.content.clone()
@@ -1144,6 +1149,23 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(content, "second");
+    }
+
+    #[tokio::test]
+    async fn decodes_readme_base64_with_whitespace() {
+        let db = test_db().await;
+        db.ensure_repo(9, "acme/widget").await.unwrap();
+        let mut readme = readme();
+        readme.content = "aGVsbG8g\nd29ybGQ=\r\n".to_string();
+        db.upsert_readme(9, &readme).await.unwrap();
+
+        let content: String =
+            sqlx::query_scalar("SELECT content FROM github_readmes WHERE repo_id = ?")
+                .bind(9)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(content, "hello world");
     }
 
     #[tokio::test]

@@ -38,7 +38,7 @@ fn init_logging() -> Result<WorkerGuard> {
                 .with_writer(file)
                 .with_ansi(false)
                 .with_target(false)
-                .with_filter(LevelFilter::DEBUG),
+                .with_filter(LevelFilter::INFO),
         )
         .init();
 
