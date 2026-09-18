@@ -2,7 +2,9 @@ use std::env;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use oss_insight_source::MAX_SEARCH_PAGES;
 use serde::Deserialize;
+use serde::de::{Deserializer, Error as _};
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -34,6 +36,7 @@ pub struct TrendingConfig {
 pub struct TrendingSearchConfig {
     pub stars: String,
     pub created: String,
+    #[serde(deserialize_with = "deserialize_max_pages")]
     pub max_pages: u32,
 }
 
@@ -110,6 +113,19 @@ impl GithubPeriod {
             GithubPeriod::Monthly => "monthly",
         }
     }
+}
+
+fn deserialize_max_pages<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if !(1..=MAX_SEARCH_PAGES).contains(&value) {
+        return Err(D::Error::custom(format!(
+            "max_pages must be between 1 and {MAX_SEARCH_PAGES}"
+        )));
+    }
+    Ok(value)
 }
 
 fn home_dir() -> PathBuf {

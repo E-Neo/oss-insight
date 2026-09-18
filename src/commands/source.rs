@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
-use oss_insight_source::{Github, GithubBuilder, SearchOrder, SearchSort};
+use oss_insight_source::{Github, GithubBuilder, MAX_SEARCH_PAGES, SearchOrder, SearchSort};
 
 use crate::commands::config::Config;
 use crate::commands::util::stdin_or_iter;
@@ -29,6 +29,16 @@ pub(crate) fn github_from_config(config: &Config) -> Github {
         builder = builder.https_proxy(https_proxy.clone());
     }
     builder.build()
+}
+
+fn parse_max_pages(value: &str) -> Result<u32, String> {
+    let pages = value.parse::<u32>().map_err(|e| e.to_string())?;
+    if !(1..=MAX_SEARCH_PAGES).contains(&pages) {
+        return Err(format!(
+            "max-pages must be between 1 and {MAX_SEARCH_PAGES}"
+        ));
+    }
+    Ok(pages)
 }
 
 #[derive(Subcommand)]
@@ -88,7 +98,7 @@ pub enum GithubCommands {
         #[arg(long)]
         order: SearchOrderArg,
         /// Maximum number of pages to fetch.
-        #[arg(long)]
+        #[arg(long, value_parser = parse_max_pages)]
         max_pages: u32,
     },
 }

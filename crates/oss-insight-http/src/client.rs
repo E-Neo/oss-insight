@@ -54,8 +54,9 @@ impl RateLimitedClient {
             let req = builder.try_clone().unwrap();
             self.timer.sleep(deadline).await;
             match req.send().await {
-                Ok(resp) => {
-                    if let Some(retry_after) = get_retry_after(&resp) {
+                Ok(mut resp) => {
+                    let retry_after = get_retry_after(&resp);
+                    if let Some(retry_after) = retry_after {
                         self.timer.set_deadline(Instant::now() + retry_after);
                     }
                     if let Some(new_deadline) = get_x_ratelimit_reset(&resp) {
@@ -65,14 +66,32 @@ impl RateLimitedClient {
                         return Ok(resp);
                     }
                     let status = resp.status();
+                    let url = resp.url().to_string();
+                    let retry_after_secs = retry_after.map(|d| d.as_secs());
+                    let ratelimit_limit = header_u64(&resp, "x-ratelimit-limit");
+                    let ratelimit_remaining = header_u64(&resp, "x-ratelimit-remaining");
+                    let ratelimit_reset = header_u64(&resp, "x-ratelimit-reset");
+                    let mut body = String::new();
+                    while let Some(chunk) = resp.chunk().await.ok().flatten() {
+                        body.push_str(&String::from_utf8_lossy(&chunk));
+                    }
                     last_response = Some(resp);
                     self.timer.backoff();
-                    warn!(?status, "non-200 response, backing off");
+                    warn!(
+                        url = %url,
+                        ?status,
+                        ?retry_after_secs,
+                        ?ratelimit_limit,
+                        ?ratelimit_remaining,
+                        ?ratelimit_reset,
+                        body = %body,
+                        "non-200 response, backing off"
+                    );
                 }
                 Err(error) => {
-                    last_error = Some(error);
                     self.timer.backoff();
-                    warn!("transport error, backing off");
+                    warn!(?error, "transport error, backing off");
+                    last_error = Some(error);
                 }
             }
             if Instant::now() >= deadline {
@@ -173,31 +192,25 @@ impl RateLimitedClientBuilder {
     }
 }
 
-fn get_retry_after(resp: &Response) -> Option<Duration> {
+fn header_u64(resp: &Response, name: &str) -> Option<u64> {
     resp.headers()
-        .get("retry-after")
+        .get(name)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_secs)
+}
+
+fn get_retry_after(resp: &Response) -> Option<Duration> {
+    header_u64(resp, "retry-after").map(Duration::from_secs)
 }
 
 fn get_x_ratelimit_reset(resp: &Response) -> Option<Instant> {
-    let headers = resp.headers();
-    headers
-        .get("x-ratelimit-remaining")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
+    header_u64(resp, "x-ratelimit-remaining")
         .filter(|remaining| *remaining == 0)
-        .and_then(|_| {
-            headers
-                .get("x-ratelimit-reset")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(|secs| {
-                    Instant::now()
-                        + (UNIX_EPOCH + Duration::from_secs(secs))
-                            .duration_since(SystemTime::now())
-                            .unwrap_or(Duration::ZERO)
-                })
+        .and_then(|_| header_u64(resp, "x-ratelimit-reset"))
+        .map(|secs| {
+            Instant::now()
+                + (UNIX_EPOCH + Duration::from_secs(secs))
+                    .duration_since(SystemTime::now())
+                    .unwrap_or(Duration::ZERO)
         })
 }

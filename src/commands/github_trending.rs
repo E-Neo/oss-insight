@@ -12,12 +12,17 @@ use crate::commands::workflow::{now, resolve_created, search_query};
 pub async fn run(config: &Config, output: &Path) -> Result<()> {
     let mut github = github_from_config(config);
     let trending = &config.source.github.trending;
-    let mut ids = Vec::new();
+
+    let file = File::create(output)?;
+    let mut writer = BufWriter::new(file);
 
     for lang in &trending.languages {
         for period in &trending.periods {
             let repos = github.trending(lang, period.as_str()).await?.data;
-            ids.extend(repos.into_iter().map(|repo| repo.id));
+            for repo in repos {
+                writeln!(writer, "{}", repo.id)?;
+            }
+            writer.flush()?;
         }
     }
 
@@ -32,15 +37,11 @@ pub async fn run(config: &Config, output: &Path) -> Result<()> {
             if resp.data.items.is_empty() {
                 break;
             }
-            ids.extend(resp.data.items.into_iter().map(|repo| repo.id));
+            for repo in resp.data.items {
+                writeln!(writer, "{}", repo.id)?;
+            }
+            writer.flush()?;
         }
     }
-
-    let file = File::create(output)?;
-    let mut writer = BufWriter::new(file);
-    for id in ids {
-        writeln!(writer, "{id}")?;
-    }
-    writer.flush()?;
     Ok(())
 }

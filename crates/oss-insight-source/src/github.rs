@@ -20,6 +20,7 @@ const TRENDING_BASE_URL: &str = "https://github.com/trending";
 const MEDIA_TYPE_DEFAULT: &str = "application/vnd.github+json";
 
 const SEARCH_PER_PAGE: u32 = 100;
+pub const MAX_SEARCH_PAGES: u32 = 10;
 
 pub struct GithubBuilder {
     token: Option<String>,
